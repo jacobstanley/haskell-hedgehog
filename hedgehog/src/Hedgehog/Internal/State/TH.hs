@@ -25,19 +25,13 @@ import           Hedgehog.Internal.Show (showPretty)
 import           Language.Haskell.TH
 import           Language.Haskell.TH.Lift (deriveLift)
 
-myFunc :: Q Exp
-myFunc = do
-  x <- reify 'get
-  return $ LitE (StringL (show x))
-
-
 get :: [Int] -> Int -> IO Int
 get xs index =
   return (xs !! index)
 
-foo :: Int -> Int
+foo :: Monad m => Int -> m Int
 foo x =
-  x + 1
+  pure (x + 1)
 
 -- command_get :: (MonadGen g, MonadIO m) => Gen Get -> [Callback Get CInt] -> Command g m s
 -- $(command 'get)
@@ -47,20 +41,27 @@ rename f =
   mkName . f . nameBase
 
 upcase :: String -> String
-upcase xs =
-  case xs of
-    [] ->
-      []
-    x : xs ->
-      Char.toUpper x : xs
+upcase = \case
+  [] ->
+    []
+  x : xs ->
+    Char.toUpper x : xs
 
 upcaseName :: Name -> Name
 upcaseName =
   rename upcase
 
+monad :: Type -> Maybe Type
+monad = \case
+  AppT m _ ->
+    Just m
+  _ ->
+    Nothing
+
 data Function =
   Function {
-      functionArguments :: [Type]
+      functionContext :: [Type]
+    , functionArguments :: [Type]
     , functionResult :: Type
     } deriving (Eq, Ord, Show)
 
@@ -76,14 +77,22 @@ reifyVarType name = do
 takeFunction :: Type -> Function
 takeFunction x0 =
   case x0 of
+    ForallT _ ctx x ->
+      let
+        Function _ xs r =
+          takeFunction x
+      in
+        Function ctx xs r
+
     ArrowT `AppT` x `AppT` y ->
       let
-        Function xs r =
+        Function ctx xs r =
           takeFunction y
       in
-        Function (x : xs) r
+        Function ctx (x : xs) r
+
     x ->
-      Function [] x
+      Function [] [] x
 
 lazyBang :: Bang
 lazyBang =
@@ -111,31 +120,89 @@ applyHTraverse f name = \case
     [e| htraverse $(f) $(varE name) |]
 
 constructHTraverseTail :: Q Exp -> [(Name, Availability)] -> Q Exp -> Q Exp
-constructHTraverseTail f xs0 exp =
+constructHTraverseTail f xs0 expr =
   case xs0 of
     [] ->
-      exp
+      expr
     (name, x) : xs ->
-      [e| $(exp) <*> $(applyHTraverse f name x) |]
+      constructHTraverseTail f xs [e| $(expr) <*> $(applyHTraverse f name x) |]
 
 constructHTraverse :: Q Exp -> [(Name, Availability)] -> Q Exp -> Q Exp
-constructHTraverse f xs0 exp =
+constructHTraverse f xs0 expr =
   case xs0 of
     [] ->
-      exp
+      expr
     (name, x) : xs ->
-      constructHTraverseTail f xs [e| $(exp) <$> $(applyHTraverse f name x) |]
+      constructHTraverseTail f xs [e| $(expr) <$> $(applyHTraverse f name x) |]
 
 instanceHTraversable :: Name -> [Availability] -> Q [Dec]
 instanceHTraversable name aargs = do
   names <- replicateM (length aargs) (newName "x")
 
-  [d| instance HTraversable $(varT name) where
-        htraverse f x =
+  [d| instance HTraversable $(conT name) where
+        htraverse _f x =
           case x of
             $(conP name (fmap varP names)) ->
-              $(constructHTraverse [e| f |] (zip names aargs) (conE name))
+              $(constructHTraverse [e| _f |] (zip names aargs) (conE name))
    |]
+
+makeExecuteFunction :: Name -> [Type] -> Q Exp
+makeExecuteFunction functionName args = do
+  names <- replicateM (length args) (newName "x")
+
+  let
+    dataName =
+      rename upcase functionName
+
+    pats =
+      fmap varP names
+
+    exps =
+      fmap varE names
+
+  -- lam <- lamE [conP dataName pats] (foldl appE (varE functionName) exps)
+  -- liftIO . putStrLn . pprint $ lam
+
+  lamE [conP dataName pats] (foldl appE (varE functionName) exps)
+
+makeCommandFunction :: Name -> [Type] -> Q Type -> Q [Dec]
+makeCommandFunction functionName args resultType = do
+  let
+    dataName =
+      rename upcase functionName
+
+    name =
+      rename (\x -> "make" ++ x) dataName
+
+  sig <-
+    sigD name [t|
+      forall g m s.
+      (MonadGen g, MonadIO m) =>
+      (s Symbolic -> Maybe (g ($(conT dataName) Symbolic))) ->
+      [Callback $(conT dataName) $(resultType) s] ->
+      Command g m s
+    |]
+
+  let
+    gen =
+      mkName "gen"
+
+    callbacks =
+      mkName "callbacks"
+
+    body =
+      normalB [e|
+        let
+          execute =
+            $(makeExecuteFunction functionName args)
+        in
+          Command $(varE gen) execute $(varE callbacks)
+      |]
+
+  fun <-
+    funD name [clause [varP gen, varP callbacks] body []]
+
+  pure [sig, fun]
 
 data Availability =
     G -- | Generated values, always available.
@@ -147,7 +214,7 @@ command name aargs = do
   vtype <- reifyVarType name
 
   let
-    Function gargs result =
+    Function _ gargs result =
       takeFunction vtype
 
     gargsLength =
@@ -175,28 +242,33 @@ command name aargs = do
     args =
       zipWith3 deal aargs gargs vargs
 
-    datName =
+    dataName =
       upcaseName name
 
     con =
-      NormalC datName (fmap lazy args)
+      NormalC dataName (fmap lazy args)
 
     dat_v =
       [KindedTV (mkName "v") (ArrowT `AppT` StarT `AppT` StarT)]
 
     dat =
-      DataD [] datName dat_v Nothing [con] []
+      DataD [] dataName dat_v Nothing [con] []
 
     htraversable =
-      instanceHTraversable datName aargs
+      instanceHTraversable dataName aargs
+
+    makeCommand =
+      makeCommandFunction name args (pure result)
 
   --liftIO . putStrLn $ showPretty vtype
-  --liftIO . putStrLn $ showPretty (takeFunction vtype)
+  liftIO . putStrLn $ showPretty (takeFunction vtype)
   liftIO . putStrLn $ pprint dat
   ht <- htraversable
   liftIO . putStrLn $ pprint ht
+  mc <- makeCommand
+  liftIO . putStrLn $ pprint mc
 
-  return [dat]
+  return $ [dat] ++ ht ++ mc
 
 ------------------------------------------------------------------------
 -- FIXME Replace with DeriveLift when we drop 7.10 support.
