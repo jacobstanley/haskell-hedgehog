@@ -98,8 +98,6 @@ modelVar :: Q Type -> Q Type
 modelVar x = do
   [t| Var $(x) $(nameVar "v") |]
 
--- ((<*>) ((<$>) Register (pure name)) (htraverse f pid))
-
 applyHTraverse :: Q Exp -> Name -> Availability -> Q Exp
 applyHTraverse f name = \case
   G ->
@@ -107,31 +105,27 @@ applyHTraverse f name = \case
   V ->
     [e| htraverse $(f) $(varE name) |]
 
-constructHTraverseTail :: Q Exp -> [(Name, Availability)] -> Q Exp -> Q Exp
-constructHTraverseTail f xs0 expr =
-  case xs0 of
-    [] ->
-      expr
-    (name, x) : xs ->
-      constructHTraverseTail f xs [e| $(expr) <*> $(applyHTraverse f name x) |]
-
 constructHTraverse :: Q Exp -> [(Name, Availability)] -> Q Exp -> Q Exp
 constructHTraverse f xs0 expr =
   case xs0 of
     [] ->
       expr
     (name, x) : xs ->
-      constructHTraverseTail f xs [e| $(expr) <$> $(applyHTraverse f name x) |]
+      constructHTraverse f xs [e| $(expr) <*> $(applyHTraverse f name x) |]
 
 instanceHTraversable :: Name -> [Availability] -> Q [Dec]
 instanceHTraversable name aargs = do
   names <- replicateM (length aargs) (newName "x")
 
+  let
+    pcon =
+      [e| pure $(conE name) |]
+
   [d| instance HTraversable $(conT name) where
         htraverse _f x =
           case x of
             $(conP name (fmap varP names)) ->
-              $(constructHTraverse [e| _f |] (zip names aargs) (conE name))
+              $(constructHTraverse [e| _f |] (zip names aargs) pcon)
    |]
 
 unwrap :: Type -> Q Exp -> Q Exp
@@ -146,8 +140,17 @@ unwrap ty0 x = do
     _ ->
       x
 
-makeExecuteFunction :: Name -> [Type] -> Q Exp
-makeExecuteFunction functionName args = do
+maybeLiftIO :: Q Type -> Q Exp -> Q Exp
+maybeLiftIO qmonad x = do
+  monad <- qmonad
+  io <- [t| IO |]
+  if monad == io then
+    [e| liftIO $(x) |]
+  else
+    x
+
+makeExecuteFunction :: Name -> Q Type -> [Type] -> Q Exp
+makeExecuteFunction functionName qmonad args = do
   names <- replicateM (length args) (newName "x")
 
   let
@@ -163,7 +166,8 @@ makeExecuteFunction functionName args = do
   -- lam <- lamE [conP dataName pats] (foldl appE (varE functionName) exps)
   -- liftIO . putStrLn . pprint $ lam
 
-  lamE [conP dataName pats] (foldl appE (varE functionName) exps)
+  lamE [conP dataName pats]
+    (maybeLiftIO qmonad $ foldl appE (varE functionName) exps)
 
 contextForall :: [Type] -> Q Type -> Q Type
 contextForall xs qtyp = do
@@ -171,17 +175,30 @@ contextForall xs qtyp = do
   pure $
     ForallT [PlainTV name | VarT name <- Uniplate.universeBi xs] xs typ
 
-makeCommandFunction :: Name -> [Type] -> [Type] -> Q Type -> Q Type -> Q [Dec]
-makeCommandFunction functionName ctx args monad resultType = do
+liftMonad :: Q Type -> Q (Q Type, [Type])
+liftMonad qmonad = do
+  io <- [t| IO |]
+  monad <- qmonad
+  monadIO <- [t| MonadIO |]
+  monadVar <- newName "m"
+  if monad == io then
+    pure (varT monadVar, [monadIO `AppT` VarT monadVar])
+  else
+    pure (qmonad, [])
+
+commandFromFunction :: Name -> [Type] -> [Type] -> Q Type -> Q Type -> Q [Dec]
+commandFromFunction functionName ctx0 args monad0 resultType = do
+  (monad, ctx1) <- liftMonad monad0
+
   let
     dataName =
       rename upcase functionName
 
     name =
-      rename (\x -> "make" ++ x) dataName
+      rename (\x -> x ++ "CommandFrom") functionName
 
   sig <-
-    sigD name $ contextForall ctx [t|
+    sigD name $ contextForall (ctx0 ++ ctx1) [t|
       forall g s.
       MonadGen g =>
       (s Symbolic -> Maybe (g ($(conT dataName) Symbolic))) ->
@@ -200,7 +217,7 @@ makeCommandFunction functionName ctx args monad resultType = do
       normalB [e|
         let
           execute =
-            $(makeExecuteFunction functionName args)
+            $(makeExecuteFunction functionName monad0 args)
         in
           Command $(varE gen) execute $(varE callbacks)
       |]
@@ -266,25 +283,25 @@ command name aargs = do
         eqT, ordT, showT
       ]]
 
-    htraversable =
+    qhtraversable =
       instanceHTraversable dataName aargs
 
-    makeCommand =
-      makeCommandFunction name ctx args (pure monad) (pure result)
+    qcommandFrom =
+      commandFromFunction name ctx args (pure monad) (pure result)
 
-  --liftIO . putStrLn $ showPretty vtype
-  liftIO $ putStrLn "\n== Extracted Function =="
-  liftIO . putStrLn $ showPretty (takeFunction vtype)
-  liftIO $ putStrLn "\n== Data Type =="
-  liftIO . putStrLn $ pprint dat
-  liftIO $ putStrLn "\n== HTraversable Instance =="
-  ht <- htraversable
-  liftIO . putStrLn $ pprint ht
-  liftIO $ putStrLn "\n== Command Builder =="
-  mc <- makeCommand
-  liftIO . putStrLn $ pprint mc
+  htraversable <- qhtraversable
+  commandFrom <- qcommandFrom
 
-  return $ [dat] ++ ht ++ mc
+  --liftIO $ putStrLn "\n== Extracted Function =="
+  --liftIO . putStrLn $ showPretty (takeFunction vtype)
+  --liftIO $ putStrLn "\n== Data Type =="
+  --liftIO . putStrLn $ pprint dat
+  --liftIO $ putStrLn "\n== HTraversable Instance =="
+  --liftIO . putStrLn $ pprint ht
+  --liftIO $ putStrLn "\n== Command Builder =="
+  --liftIO . putStrLn $ pprint mc
+
+  return $ [dat] ++ htraversable ++ commandFrom
 
 ------------------------------------------------------------------------
 -- FIXME Replace with DeriveLift when we drop 7.10 support.

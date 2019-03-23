@@ -8,6 +8,7 @@ module Test.Example.Registry where
 
 import           Control.Monad (when)
 import           Control.Monad.IO.Class (MonadIO(..))
+import           Control.Monad.Morph (hoist)
 
 import           Data.Foldable (traverse_)
 import qualified Data.HashTable.IO as HashTable
@@ -115,14 +116,14 @@ initialState =
 --
 $(command 'spawn [])
 
-command_spawn :: Command Gen IO State
-command_spawn =
+spawnCommand :: MonadIO m => Command Gen m State
+spawnCommand =
   let
     gen _ =
       Just $
         pure Spawn
   in
-    makeSpawn gen [
+    spawnCommandFrom gen [
       Update $ \s _i o ->
         s {
           statePids =
@@ -151,22 +152,14 @@ command_spawn =
 --   not lists:keymember(Pid,2,S#state.regs).
 --
 
-data Register v =
-  Register Name (Var Pid v)
-  deriving (Eq, Show)
-
-instance HTraversable Register where
-  htraverse f (Register name pid) =
-    Register
-      <$> pure name
-      <*> htraverse f pid
-
 genName :: MonadGen m => m Name
 genName =
   Name <$> Gen.element ["a", "b", "c", "d"]
 
-command_register :: (MonadGen n, MonadIO m) => Command n m State
-command_register =
+$(command 'register [G,V])
+
+registerCommand :: MonadIO m => Command Gen m State
+registerCommand =
   let
     gen s =
       case Set.toList (statePids s) of
@@ -177,11 +170,8 @@ command_register =
             Register
               <$> genName
               <*> Gen.element xs
-
-    execute (Register name pid) =
-      liftIO $ register name (concrete pid)
   in
-    Command gen execute [
+    registerCommandFrom gen [
         Require $ \s (Register name _) ->
           Map.notMember name (stateRegs s)
 
@@ -211,25 +201,16 @@ command_register =
 --   S#state{regs=lists:keydelete(Name,1,S#state.regs)}.
 --
 
-data Unregister (v :: * -> *) =
-  Unregister Name
-  deriving (Eq, Show)
+$(command 'unregister [G])
 
-instance HTraversable Unregister where
-  htraverse _ (Unregister name) =
-    Unregister <$> pure name
-
-command_unregister :: (MonadGen n, MonadIO m) => Command n m State
-command_unregister =
+unregisterCommand :: MonadIO m => Command Gen m State
+unregisterCommand =
   let
     gen _ =
       Just $
         Unregister <$> genName
-
-    execute (Unregister name) =
-      liftIO $ unregister name
   in
-    Command gen execute [
+    unregisterCommandFrom gen [
         Require $ \s (Unregister name) ->
           Map.member name (stateRegs s)
 
@@ -249,7 +230,7 @@ prop_registry_sequential =
       Gen.sequential
         (Range.linear 1 100)
         initialState
-        [command_spawn, command_register, command_unregister]
+        [spawnCommand, registerCommand, unregisterCommand]
 
     evalIO reset
     executeSequential initialState actions
@@ -262,7 +243,7 @@ prop_registry_parallel =
         (Range.linear 1 100)
         (Range.linear 1 10)
         initialState
-        [command_spawn, command_register, command_unregister]
+        [spawnCommand, registerCommand, unregisterCommand]
 
     test $ do
       evalIO reset
