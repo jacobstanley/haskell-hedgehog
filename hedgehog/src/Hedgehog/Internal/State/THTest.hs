@@ -23,5 +23,14 @@ import           Hedgehog
 import           Hedgehog.Internal.State.TH
 import           Language.Haskell.TH
 
+get :: [Int] -> Int -> IO Int
+get xs index =
+  return (xs !! index)
+
+addPrint :: Int -> Int -> IO Int
+addPrint x y = do
+  liftIO $ putStrLn (show x ++ " + " ++ show y)
+  pure (x + y)
+
 $(command 'get [V,G])
-$(command 'foo [G])
+$(command 'addPrint [V,G])

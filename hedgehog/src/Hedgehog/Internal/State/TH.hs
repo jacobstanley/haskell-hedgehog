@@ -15,7 +15,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
-module Hedgehog.Internal.State.TH where
+module Hedgehog.Internal.State.TH (
+    Availability(..)
+  , command
+  ) where
 
 import           Control.Monad (when, replicateM)
 import           Control.Monad.IO.Class (MonadIO(..))
@@ -23,18 +26,12 @@ import qualified Data.Char as Char
 import           Hedgehog
 import           Hedgehog.Internal.Show (showPretty)
 import           Language.Haskell.TH
+import           Language.Haskell.TH.Syntax (Name(..), NameFlavour(..))
+import           Language.Haskell.TH.Syntax (OccName(..), ModName(..))
 import           Language.Haskell.TH.Lift (deriveLift)
+import qualified Data.Generics.Uniplate.Data as Uniplate
 
-get :: [Int] -> Int -> IO Int
-get xs index =
-  return (xs !! index)
-
-foo :: Monad m => Int -> m Int
-foo x =
-  pure (x + 1)
-
--- command_get :: (MonadGen g, MonadIO m) => Gen Get -> [Callback Get CInt] -> Command g m s
--- $(command 'get)
+import Debug.Trace
 
 rename :: (String -> String) -> Name -> Name
 rename f =
@@ -51,17 +48,11 @@ upcaseName :: Name -> Name
 upcaseName =
   rename upcase
 
-monad :: Type -> Maybe Type
-monad = \case
-  AppT m _ ->
-    Just m
-  _ ->
-    Nothing
-
 data Function =
   Function {
       functionContext :: [Type]
     , functionArguments :: [Type]
+    , functionMonad :: Type
     , functionResult :: Type
     } deriving (Eq, Ord, Show)
 
@@ -74,25 +65,22 @@ reifyVarType name = do
     _ ->
       fail $ show name ++ " is not a variable / function"
 
-takeFunction :: Type -> Function
+takeFunction :: Type -> Maybe Function
 takeFunction x0 =
   case x0 of
-    ForallT _ ctx x ->
-      let
-        Function _ xs r =
-          takeFunction x
-      in
-        Function ctx xs r
+    ForallT _ ctx x -> do
+      Function _ xs m r <- takeFunction x
+      pure $ Function ctx xs m r
 
-    ArrowT `AppT` x `AppT` y ->
-      let
-        Function ctx xs r =
-          takeFunction y
-      in
-        Function ctx (x : xs) r
+    ArrowT `AppT` x `AppT` y -> do
+      Function ctx xs m r <- takeFunction y
+      pure $ Function ctx (x : xs) m r
 
-    x ->
-      Function [] [] x
+    AppT m x ->
+      pure $ Function [] [] m x
+
+    _ ->
+      Nothing
 
 lazyBang :: Bang
 lazyBang =
@@ -146,6 +134,18 @@ instanceHTraversable name aargs = do
               $(constructHTraverse [e| _f |] (zip names aargs) (conE name))
    |]
 
+unwrap :: Type -> Q Exp -> Q Exp
+unwrap ty0 x = do
+  var <- [t| Var |]
+  case ty0 of
+    ty `AppT` _ `AppT` _ ->
+      if ty == var then
+        [e| concrete $(x) |]
+      else
+        x
+    _ ->
+      x
+
 makeExecuteFunction :: Name -> [Type] -> Q Exp
 makeExecuteFunction functionName args = do
   names <- replicateM (length args) (newName "x")
@@ -158,15 +158,21 @@ makeExecuteFunction functionName args = do
       fmap varP names
 
     exps =
-      fmap varE names
+      zipWith ($) (fmap unwrap args) (fmap varE names)
 
   -- lam <- lamE [conP dataName pats] (foldl appE (varE functionName) exps)
   -- liftIO . putStrLn . pprint $ lam
 
   lamE [conP dataName pats] (foldl appE (varE functionName) exps)
 
-makeCommandFunction :: Name -> [Type] -> Q Type -> Q [Dec]
-makeCommandFunction functionName args resultType = do
+contextForall :: [Type] -> Q Type -> Q Type
+contextForall xs qtyp = do
+  typ <- qtyp
+  pure $
+    ForallT [PlainTV name | VarT name <- Uniplate.universeBi xs] xs typ
+
+makeCommandFunction :: Name -> [Type] -> [Type] -> Q Type -> Q Type -> Q [Dec]
+makeCommandFunction functionName ctx args monad resultType = do
   let
     dataName =
       rename upcase functionName
@@ -175,12 +181,12 @@ makeCommandFunction functionName args resultType = do
       rename (\x -> "make" ++ x) dataName
 
   sig <-
-    sigD name [t|
-      forall g m s.
-      (MonadGen g, MonadIO m) =>
+    sigD name $ contextForall ctx [t|
+      forall g s.
+      MonadGen g =>
       (s Symbolic -> Maybe (g ($(conT dataName) Symbolic))) ->
       [Callback $(conT dataName) $(resultType) s] ->
-      Command g m s
+      Command g $(monad) s
     |]
 
   let
@@ -213,10 +219,10 @@ command :: Name -> [Availability] -> Q [Dec]
 command name aargs = do
   vtype <- reifyVarType name
 
-  let
-    Function _ gargs result =
-      takeFunction vtype
+  Function ctx gargs monad result <-
+    maybe (fail $ show name ++ " was not monadic.") pure (takeFunction vtype)
 
+  let
     gargsLength =
       length gargs
 
@@ -230,6 +236,10 @@ command name aargs = do
       " were provided."
 
   vargs <- traverse (modelVar . pure) gargs
+
+  eqT <- [t| Eq |]
+  ordT <- [t| Ord |]
+  showT <- [t| Show |]
 
   let
     deal t g v =
@@ -252,19 +262,25 @@ command name aargs = do
       [KindedTV (mkName "v") (ArrowT `AppT` StarT `AppT` StarT)]
 
     dat =
-      DataD [] dataName dat_v Nothing [con] []
+      DataD [] dataName dat_v Nothing [con] [DerivClause Nothing [
+        eqT, ordT, showT
+      ]]
 
     htraversable =
       instanceHTraversable dataName aargs
 
     makeCommand =
-      makeCommandFunction name args (pure result)
+      makeCommandFunction name ctx args (pure monad) (pure result)
 
   --liftIO . putStrLn $ showPretty vtype
+  liftIO $ putStrLn "\n== Extracted Function =="
   liftIO . putStrLn $ showPretty (takeFunction vtype)
+  liftIO $ putStrLn "\n== Data Type =="
   liftIO . putStrLn $ pprint dat
+  liftIO $ putStrLn "\n== HTraversable Instance =="
   ht <- htraversable
   liftIO . putStrLn $ pprint ht
+  liftIO $ putStrLn "\n== Command Builder =="
   mc <- makeCommand
   liftIO . putStrLn $ pprint mc
 
