@@ -55,6 +55,7 @@ module Hedgehog.Internal.State (
 import qualified Control.Concurrent.Async.Lifted as Async
 import           Control.Monad (foldM, foldM_)
 import           Control.Monad.Catch (MonadCatch)
+import           Control.Monad.Morph (MFunctor(..))
 import           Control.Monad.State.Class (MonadState, get, put, modify)
 import           Control.Monad.Trans.Class (lift)
 import           Control.Monad.Trans.Control (MonadBaseControl)
@@ -404,6 +405,10 @@ data Command n m (state :: (* -> *) -> *) =
         [Callback input output state]
     }
 
+instance MFunctor (Command gen) where
+  hoist f (Command gen exec callbacks) =
+    Command gen (\x -> f (exec x)) callbacks
+
 -- | Checks that input for a command can be executed in the given state.
 --
 commandGenOK :: Command n m state -> state Symbolic -> Bool
@@ -435,6 +440,10 @@ data Action m (state :: (* -> *) -> *) =
     , actionEnsure ::
         state Concrete -> state Concrete -> input Concrete -> output -> Test ()
     }
+
+instance MFunctor Action where
+  hoist f (Action input output exec require update ensure) =
+    Action input output (\x -> f (exec x)) require update ensure
 
 instance Show (Action m state) where
   showsPrec p (Action input (Symbolic (Name output)) _ _ _ _) =
@@ -591,6 +600,10 @@ data Sequential m state =
       sequentialActions :: [Action m state]
     }
 
+instance MFunctor Sequential where
+  hoist f (Sequential actions) =
+    Sequential (fmap (hoist f) actions)
+
 renderAction :: Action m state -> [String]
 renderAction (Action input (Symbolic (Name output)) _ _ _ _) =
   let
@@ -664,6 +677,13 @@ data Parallel m state =
       -- | The second branch.
     , parallelBranch2 :: [Action m state]
     }
+
+instance MFunctor Parallel where
+  hoist f (Parallel prefix branch1 branch2) =
+    Parallel
+      (fmap (hoist f) prefix)
+      (fmap (hoist f) branch1)
+      (fmap (hoist f) branch2)
 
 -- FIXME we should not abuse Show to get nice output for actions
 instance Show (Parallel m state) where
