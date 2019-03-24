@@ -60,7 +60,7 @@ library
     , directory                       >= 1.2        && < 1.4
     , exceptions                      >= 0.7        && < 0.11
     , fail                            >= 4.9        && < 5
-    , language-c
+    , language-c                      >= 0.8        && < 0.9
     , lifted-async                    >= 0.7        && < 0.11
     , mmorph                          >= 1.0        && < 1.2
     , monad-control                   >= 1.0        && < 1.1
