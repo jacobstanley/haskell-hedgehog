@@ -18,6 +18,9 @@ $(generate defaultConfig {
       "csrc/circularbuffer/circularbuffer.dylib"
   })
 
+------------------------------------------------------------------------
+-- Commands for csrc/circularbuffer/circularbuffer.h
+
 $(command 'circbuffer_destroy [V])
 $(command 'circbuffer_create [G])
 $(command 'circbuffer_get [V])

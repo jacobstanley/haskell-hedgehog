@@ -70,6 +70,7 @@ library
     , uniplate                        >= 1.6        && < 1.7
 
     , serialise
+    , foreign-store
 
 test-suite test
   type:

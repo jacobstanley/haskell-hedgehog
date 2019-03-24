@@ -22,6 +22,8 @@ import qualified Data.Maybe as Maybe
 import           Foreign.C.Types
 import           Foreign.Ptr (Ptr)
 import           Foreign.Storable (Storable)
+import           Foreign.Store (Store)
+import qualified Foreign.Store as Store
 import           Hedgehog.Internal.Show (showPretty)
 import qualified Language.C as C
 import qualified Language.C.Analysis as C
@@ -36,7 +38,7 @@ import qualified Language.Haskell.TH as TH
 import qualified Language.Haskell.TH.Syntax as TH
 import           Language.Haskell.TH.Lift (deriveLift)
 import           System.Directory (getDirectoryContents)
-import           System.FilePath ((</>), takeDirectory, takeExtension)
+import           System.FilePath ((</>), takeDirectory, takeExtension, makeRelative)
 import           System.IO.Unsafe (unsafePerformIO)
 import           System.Posix.DynamicLinker (DL, RTLDFlags(..), dlopen, dlclose)
 import           Text.PrettyPrint.Annotated.WL (Doc, (<+>))
@@ -500,28 +502,30 @@ ppCommand x =
     "$(command '" <> WL.text (functionName x) <>
       " [" <> WL.hcat (WL.punctuate "," availabilities) <> "])"
 
-ppCommands :: Header -> Doc ()
-ppCommands =
-  WL.vsep . fmap ppCommand . headerFunctions
+ppCommands :: FilePath -> Header -> Doc ()
+ppCommands root header =
+  WL.vsep $ [
+      "-- Commands for " <> WL.text (makeRelative root (headerPath header))
+    ] ++ fmap ppCommand (headerFunctions header)
 
-libraryRef :: IORef (Maybe DL)
-libraryRef =
-  unsafePerformIO (IORef.newIORef Nothing)
+loadCLibraryFrom :: FilePath -> FilePath -> IO ()
+loadCLibraryFrom root library = do
+  mstore <- Store.lookupStore 1
 
-loadCLibraryFrom :: FilePath -> IO ()
-loadCLibraryFrom library = do
-  putStrLn library
+  case mstore of
+    Nothing -> do
+      lib <- dlopen library [RTLD_LAZY, RTLD_GLOBAL]
+      _ <- Store.newStore lib
+      putStrLn $ "Loaded " <> makeRelative root library
 
-  mlib <- IORef.readIORef libraryRef
+    Just store -> do
+      old <- Store.readStore store
+      dlclose old
 
-  case mlib of
-    Nothing ->
-      pure ()
-    Just lib ->
-      dlclose lib
+      new <- dlopen library [RTLD_LAZY, RTLD_GLOBAL]
+      Store.writeStore store new
+      putStrLn $ "Reloaded " <> makeRelative root library
 
-  _ <- dlopen library [RTLD_LAZY, RTLD_GLOBAL]
-  pure ()
 
 generate :: Config -> Q [TH.Dec]
 generate config0 = do
@@ -537,22 +541,23 @@ generate config0 = do
   headers <- liftExcept showErrors . ExceptT . pure $
     traverse (uncurry summarizeAST) asts
 
-  liftIO . putStrLn . show . WL.vsep $ fmap ppCommands headers
+  liftIO . putStrLn . show . WL.vsep $ fmap (ppCommands root) headers
 
   bindings <- concat <$> traverse generateHeaderBinding headers
 
   let
-    library =
+    libraryE =
       TH.litE (TH.StringL (configCLibrary config))
 
-  -- TH.addForeignFilePath TH.RawObject (configCLibrary config)
+    rootE =
+      TH.litE (TH.StringL root)
 
-  _ <- liftIO $ dlopen (configCLibrary config) [RTLD_LAZY, RTLD_GLOBAL]
+  liftIO $ loadCLibraryFrom root (configCLibrary config)
 
   loader <- [d|
     loadCLibrary :: IO ()
     loadCLibrary = do
-      loadCLibraryFrom $(library)
+      loadCLibraryFrom $(rootE) $(libraryE)
     |]
 
   pure $ bindings ++ loader
