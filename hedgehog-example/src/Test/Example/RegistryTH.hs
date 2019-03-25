@@ -157,7 +157,7 @@ genName :: MonadGen m => m Name
 genName =
   Name <$> Gen.element ["a", "b", "c", "d"]
 
-$(command "register" [t| forall v. Name -> Var Pid v -> IO () |] [| ioRegister |])
+$(command "register" [t| Name -> Var Pid -> IO () |] [| ioRegister |])
 
 register :: MonadIO m => Command Gen m State
 register =

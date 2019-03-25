@@ -66,25 +66,36 @@ data Availability =
     deriving (Eq, Ord, Show)
 
 takeFunctionLoop :: Type -> Type -> Type -> Maybe Function
-takeFunctionLoop var0 v x0 =
+takeFunctionLoop varType0 v x0 =
   case x0 of
     ForallT _ ctx x -> do
-      Function _ xs m r <- takeFunctionLoop var0 v x
+      Function _ xs m r <- takeFunctionLoop varType0 v x
       pure $ Function ctx xs m r
 
-    ArrowT `AppT` arg0@(var1 `AppT` x `AppT` _v) `AppT` y -> do
-      Function ctx xs m r <- takeFunctionLoop var0 v y
-      if (var0 == var1) then
-        let 
+    ArrowT `AppT` arg0@(varType1 `AppT` x `AppT` _v) `AppT` y -> do
+      Function ctx xs m r <- takeFunctionLoop varType0 v y
+      if (varType0 == varType1) then
+        let
           arg1 =
-            var1 `AppT` x `AppT` v
+            varType1 `AppT` x `AppT` v
+        in
+          pure $ Function ctx (Argument Variable arg1 : xs) m r
+      else
+        pure $ Function ctx (Argument Generated arg0 : xs) m r
+
+    ArrowT `AppT` arg0@(varType1 `AppT` x) `AppT` y -> do
+      Function ctx xs m r <- takeFunctionLoop varType0 v y
+      if (varType0 == varType1) then
+        let
+          arg1 =
+            varType1 `AppT` x `AppT` v
         in
           pure $ Function ctx (Argument Variable arg1 : xs) m r
       else
         pure $ Function ctx (Argument Generated arg0 : xs) m r
 
     ArrowT `AppT` x `AppT` y -> do
-      Function ctx xs m r <- takeFunctionLoop var0 v y
+      Function ctx xs m r <- takeFunctionLoop varType0 v y
       pure $ Function ctx (Argument Generated x : xs) m r
 
     AppT m x ->
@@ -199,7 +210,7 @@ commandFromExpression dataName executeE ctx0 args monad0 resultType = do
 
   let
     name =
-      rename (\x -> mapHead Char.toLower x ++ "CommandFrom") dataName
+      rename (\x -> mapHead Char.toLower x ++ "From") dataName
 
   sig <-
     sigD name $ contextForall (ctx0 ++ ctx1) [t|
@@ -237,7 +248,7 @@ command name typ execute = do
   Function ctx args monad result <-
     maybe (fail $ show name ++ " was not monadic.") pure mfunction
 
-  liftIO . putStrLn $ showPretty mfunction
+  --liftIO . putStrLn $ showPretty mfunction
 
   eqT <- [t| Eq |]
   ordT <- [t| Ord |]
