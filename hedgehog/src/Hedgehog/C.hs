@@ -101,6 +101,10 @@ data Function =
     , functionParameters :: [Parameter]
     } deriving (Eq, Ord, Show)
 
+functionHaskellName :: Function -> String
+functionHaskellName =
+  ("c_" ++) . functionName
+
 data Type =
     Void
   | Bool
@@ -124,70 +128,6 @@ data Type =
 data Parameter =
   Parameter (Maybe String) Type
   deriving (Eq, Ord, Show)
-
---ppCommands :: [String] -> [Function] -> Doc ()
---ppCommands typedefs functions =
---  WL.vsep (fmap ppTypedef typedefs) WL.<#>
---  WL.vsep (fmap ppFunction functions)
---
---ppTypedef :: String -> Doc ()
---ppTypedef name =
---  "data " <> WL.text name <> " = " <> WL.text name
---
---ppFunction :: Function -> Doc ()
---ppFunction (Function name result xs) =
---  "foreign import ccall \"" <>
---  WL.text name <>
---  "\" " <> WL.text name <>
---  " :: " <> WL.hsep (WL.punctuate " ->"
---    (fmap (ppType . parameterType) xs <>
---    ["IO " <> ppTypeParen result]))
---
---ppTypeParen :: Type -> Doc ()
---ppTypeParen x0 =
---  case x0 of
---  Ptr _ ->
---    "(" <> ppType x0 <> ")"
---  _ ->
---   ppType x0
---
---ppType :: Type -> Doc ()
---ppType x0 =
---  case x0 of
---    Void ->
---      "()"
---    Bool ->
---      "CBool"
---    Char ->
---      "CChar"
---    SChar ->
---      "CSChar"
---    UChar ->
---      "CUChar"
---    Short ->
---      "CShort"
---    UShort ->
---      "CUShort"
---    Int ->
---      "CInt"
---    UInt ->
---      "CUInt"
---    Long ->
---      "CLong"
---    ULong ->
---      "CULong"
---    LLong ->
---      "CLLong"
---    ULLong ->
---      "CULLong"
---    Float ->
---      "CFloat"
---    Double ->
---      "CDouble"
---    TypedefPtr xs ->
---      WL.text xs
---    Ptr x ->
---      "Ptr " <> ppTypeParen x
 
 takeFunType :: C.IdentDecl -> Maybe Function
 takeFunType decl =
@@ -313,9 +253,6 @@ summarizeAST path ast = do
 
   pure (Header path typedefs functions)
 
---  putStrLn (showPretty functions)
---  putStrLn (show (ppCommands typedefs functions))
-
 findCabalRoot :: FilePath -> Q (Maybe FilePath)
 findCabalRoot dir = do
   mcabal <- liftIO $
@@ -391,42 +328,41 @@ generateTypedefPtr name = do
   pure [dat]
 
 typeT :: Type -> Q TH.Type
-typeT x0 =
-  case x0 of
-    Void ->
-      [t| () |]
-    Bool ->
-      [t| CBool |]
-    Char ->
-      [t| CChar |]
-    SChar ->
-      [t| CSChar |]
-    UChar ->
-      [t| CUChar |]
-    Short ->
-      [t| CShort |]
-    UShort ->
-      [t| CUShort |]
-    Int ->
-      [t| CInt |]
-    UInt ->
-      [t| CUInt |]
-    Long ->
-      [t| CLong |]
-    ULong ->
-      [t| CULong |]
-    LLong ->
-      [t| CLLong |]
-    ULLong ->
-      [t| CULLong |]
-    Float ->
-      [t| CFloat |]
-    Double ->
-      [t| CDouble |]
-    TypedefPtr x ->
-      pure (TH.ConT (TH.mkName x))
-    Ptr x ->
-      [t| Ptr $(typeT x) |]
+typeT = \case
+  Void ->
+    [t| () |]
+  Bool ->
+    [t| CBool |]
+  Char ->
+    [t| CChar |]
+  SChar ->
+    [t| CSChar |]
+  UChar ->
+    [t| CUChar |]
+  Short ->
+    [t| CShort |]
+  UShort ->
+    [t| CUShort |]
+  Int ->
+    [t| CInt |]
+  UInt ->
+    [t| CUInt |]
+  Long ->
+    [t| CLong |]
+  ULong ->
+    [t| CULong |]
+  LLong ->
+    [t| CLLong |]
+  ULLong ->
+    [t| CULLong |]
+  Float ->
+    [t| CFloat |]
+  Double ->
+    [t| CDouble |]
+  TypedefPtr x ->
+    pure (TH.ConT (TH.mkName x))
+  Ptr x ->
+    [t| Ptr $(typeT x) |]
 
 generateForeignImport :: Function -> Q TH.Dec
 generateForeignImport function = do
@@ -441,7 +377,7 @@ generateForeignImport function = do
       functionName function
 
     haskellName =
-      TH.mkName (functionName function)
+      TH.mkName (functionHaskellName function)
 
     -- TH.Safe means GHC can do a GC during the call
     -- not sure if this is the best default.
@@ -456,57 +392,103 @@ generateHeaderBinding header = do
   functions <- traverse generateForeignImport (headerFunctions header)
   pure (typedefs ++ functions)
 
-guessAvailability :: Type -> WL.Doc ()
-guessAvailability = \case
-  Void ->
-    "G"
-  Bool ->
-    "G"
-  Char ->
-    "G"
-  SChar ->
-    "G"
-  UChar ->
-    "G"
-  Short ->
-    "G"
-  UShort ->
-    "G"
-  Int ->
-    "G"
-  UInt ->
-    "G"
-  Long ->
-    "G"
-  ULong ->
-    "G"
-  LLong ->
-    "G"
-  ULLong ->
-    "G"
-  Float ->
-    "G"
-  Double ->
-    "G"
-  TypedefPtr _ ->
-    "V"
-  Ptr _ ->
-    "V"
+ppParens :: WL.Doc () -> WL.Doc ()
+ppParens inner =
+  if " " `List.isInfixOf` show inner then
+    "(" <> inner <> ")"
+  else
+    inner
 
-ppCommand :: Function -> WL.Doc ()
+ppType :: Type -> WL.Doc ()
+ppType = \case
+  Void ->
+    "()"
+  Bool ->
+    "CBool"
+  Char ->
+    "CChar"
+  SChar ->
+    "CSChar"
+  UChar ->
+    "CUChar"
+  Short ->
+    "CShort"
+  UShort ->
+    "CUShort"
+  Int ->
+    "CInt"
+  UInt ->
+    "CUInt"
+  Long ->
+    "CLong"
+  ULong ->
+    "CULong"
+  LLong ->
+    "CLLong"
+  ULLong ->
+    "CULLong"
+  Float ->
+    "CFloat"
+  Double ->
+    "CDouble"
+  TypedefPtr x ->
+    "Var " <> WL.text x
+  Ptr x ->
+    "Var (Ptr " <> ppParens (ppType x) <> ")"
+
+ppResultType :: Type -> WL.Doc ()
+ppResultType = \case
+  Void ->
+    "IO ()"
+  Bool ->
+    "IO CBool"
+  Char ->
+    "IO CChar"
+  SChar ->
+    "IO CSChar"
+  UChar ->
+    "IO CUChar"
+  Short ->
+    "IO CShort"
+  UShort ->
+    "IO CUShort"
+  Int ->
+    "IO CInt"
+  UInt ->
+    "IO CUInt"
+  Long ->
+    "IO CLong"
+  ULong ->
+    "IO CULong"
+  LLong ->
+    "IO CLLong"
+  ULLong ->
+    "IO CULLong"
+  Float ->
+    "IO CFloat"
+  Double ->
+    "IO CDouble"
+  TypedefPtr x ->
+    "IO " <> WL.text x
+  Ptr x ->
+    "IO (Ptr " <> ppParens (ppType x) <> ")"
+
+ppCommand :: Function -> Doc ()
 ppCommand x =
   let
-    availabilities =
-      fmap (guessAvailability . parameterType) (functionParameters x)
+    types =
+      fmap (ppType . parameterType) (functionParameters x) ++
+      [ppResultType (functionResult x)]
   in
-    "$(command '" <> WL.text (functionName x) <>
-      " [" <> WL.hcat (WL.punctuate "," availabilities) <> "])"
+    "$(command " <> "\"" <> WL.text (functionName x) <> "\"" <>
+        "\n  [t| " <> WL.hcat (WL.punctuate " -> " types) <> " |]" <>
+        "\n  [e| " <> WL.text (functionHaskellName x) <> " |])"
 
 ppCommands :: FilePath -> Header -> Doc ()
 ppCommands root header =
   WL.vsep $ [
       "-- Commands for " <> WL.text (makeRelative root (headerPath header))
-    ] ++ fmap ppCommand (headerFunctions header)
+    ] ++ fmap (("\n" <>) . ppCommand) (headerFunctions header)
 
 loadCLibraryFrom :: FilePath -> FilePath -> IO ()
 loadCLibraryFrom root library = do
@@ -541,7 +523,7 @@ generate config0 = do
   headers <- liftExcept showErrors . ExceptT . pure $
     traverse (uncurry summarizeAST) asts
 
-  liftIO . putStrLn . show . WL.vsep $ fmap (ppCommands root) headers
+  --liftIO . putStrLn . show . WL.vsep $ fmap (ppCommands root) headers
 
   bindings <- concat <$> traverse generateHeaderBinding headers
 
