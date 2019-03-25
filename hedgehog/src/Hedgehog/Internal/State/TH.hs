@@ -37,50 +37,68 @@ rename :: (String -> String) -> Name -> Name
 rename f =
   mkName . f . nameBase
 
-upcase :: String -> String
-upcase = \case
+mapHead :: (a -> a) -> [a] -> [a]
+mapHead f = \case
   [] ->
     []
   x : xs ->
-    Char.toUpper x : xs
-
-upcaseName :: Name -> Name
-upcaseName =
-  rename upcase
+    f x : xs
 
 data Function =
   Function {
       functionContext :: [Type]
-    , functionArguments :: [Type]
+    , functionArguments :: [Argument]
     , functionMonad :: Type
     , functionResult :: Type
     } deriving (Eq, Ord, Show)
 
-reifyVarType :: Name -> Q Type
-reifyVarType name = do
-  x0 <- reify name
-  case x0 of
-    VarI _ x _ ->
-      return x
-    _ ->
-      fail $ show name ++ " is not a variable / function"
+data Argument =
+  Argument {
+      argumentAvailability :: Availability
+    , argumentType :: Type
+    } deriving (Eq, Ord, Show)
 
-takeFunction :: Type -> Maybe Function
-takeFunction x0 =
+data Availability =
+     -- | Generated values, always available.
+    Generated
+    -- | Variables, results of commands, only available during execution.
+  | Variable
+    deriving (Eq, Ord, Show)
+
+takeFunctionLoop :: Type -> Type -> Type -> Maybe Function
+takeFunctionLoop var0 v x0 =
   case x0 of
     ForallT _ ctx x -> do
-      Function _ xs m r <- takeFunction x
+      Function _ xs m r <- takeFunctionLoop var0 v x
       pure $ Function ctx xs m r
 
+    ArrowT `AppT` arg0@(var1 `AppT` x `AppT` _v) `AppT` y -> do
+      Function ctx xs m r <- takeFunctionLoop var0 v y
+      if (var0 == var1) then
+        let 
+          arg1 =
+            var1 `AppT` x `AppT` v
+        in
+          pure $ Function ctx (Argument Variable arg1 : xs) m r
+      else
+        pure $ Function ctx (Argument Generated arg0 : xs) m r
+
     ArrowT `AppT` x `AppT` y -> do
-      Function ctx xs m r <- takeFunction y
-      pure $ Function ctx (x : xs) m r
+      Function ctx xs m r <- takeFunctionLoop var0 v y
+      pure $ Function ctx (Argument Generated x : xs) m r
 
     AppT m x ->
       pure $ Function [] [] m x
 
     _ ->
       Nothing
+
+takeFunction :: Q Type -> Q (Maybe Function)
+takeFunction qtyp = do
+  var <- [t| Var |]
+  v <- varT (mkName "v")
+  typ <- qtyp
+  pure (takeFunctionLoop var v typ)
 
 lazyBang :: Bang
 lazyBang =
@@ -90,19 +108,11 @@ lazy :: Type -> (Bang, Type)
 lazy x =
   (lazyBang, x)
 
-nameVar :: String -> Q Type
-nameVar name =
-  pure (VarT (mkName name))
-
-modelVar :: Q Type -> Q Type
-modelVar x = do
-  [t| Var $(x) $(nameVar "v") |]
-
 applyHTraverse :: Q Exp -> Name -> Availability -> Q Exp
 applyHTraverse f name = \case
-  G ->
+  Generated ->
     [e| pure $(varE name) |]
-  V ->
+  Variable ->
     [e| htraverse $(f) $(varE name) |]
 
 constructHTraverse :: Q Exp -> [(Name, Availability)] -> Q Exp -> Q Exp
@@ -128,17 +138,13 @@ instanceHTraversable name aargs = do
               $(constructHTraverse [e| _f |] (zip names aargs) pcon)
    |]
 
-unwrap :: Type -> Q Exp -> Q Exp
-unwrap ty0 x = do
-  var <- [t| Var |]
-  case ty0 of
-    ty `AppT` _ `AppT` _ ->
-      if ty == var then
-        [e| concrete $(x) |]
-      else
-        x
-    _ ->
+unwrap :: Availability -> Q Exp -> Q Exp
+unwrap availability x =
+  case availability of
+    Generated ->
       x
+    Variable ->
+      [| concrete $(x) |]
 
 maybeLiftIO :: Q Type -> Q Exp -> Q Exp
 maybeLiftIO qmonad x = do
@@ -149,25 +155,19 @@ maybeLiftIO qmonad x = do
   else
     x
 
-makeExecuteFunction :: Name -> Q Type -> [Type] -> Q Exp
-makeExecuteFunction functionName qmonad args = do
+makeExecuteFunction :: Name -> Q Exp -> Q Type -> [Argument] -> Q Exp
+makeExecuteFunction dataName executeE qmonad args = do
   names <- replicateM (length args) (newName "x")
 
   let
-    dataName =
-      rename upcase functionName
-
     pats =
       fmap varP names
 
     exps =
-      zipWith ($) (fmap unwrap args) (fmap varE names)
-
-  -- lam <- lamE [conP dataName pats] (foldl appE (varE functionName) exps)
-  -- liftIO . putStrLn . pprint $ lam
+      zipWith ($) (fmap (unwrap . argumentAvailability) args) (fmap varE names)
 
   lamE [conP dataName pats]
-    (maybeLiftIO qmonad $ foldl appE (varE functionName) exps)
+    (maybeLiftIO qmonad $ foldl appE executeE exps)
 
 contextForall :: [Type] -> Q Type -> Q Type
 contextForall xs qtyp = do
@@ -186,16 +186,20 @@ liftMonad qmonad = do
   else
     pure (qmonad, [])
 
-commandFromFunction :: Name -> [Type] -> [Type] -> Q Type -> Q Type -> Q [Dec]
-commandFromFunction functionName ctx0 args monad0 resultType = do
+commandFromExpression ::
+     Name
+  -> Q Exp
+  -> [Type]
+  -> [Argument]
+  -> Q Type
+  -> Q Type
+  -> Q [Dec]
+commandFromExpression dataName executeE ctx0 args monad0 resultType = do
   (monad, ctx1) <- liftMonad monad0
 
   let
-    dataName =
-      rename upcase functionName
-
     name =
-      rename (\x -> x ++ "CommandFrom") functionName
+      rename (\x -> mapHead Char.toLower x ++ "CommandFrom") dataName
 
   sig <-
     sigD name $ contextForall (ctx0 ++ ctx1) [t|
@@ -217,7 +221,7 @@ commandFromFunction functionName ctx0 args monad0 resultType = do
       normalB [e|
         let
           execute =
-            $(makeExecuteFunction functionName monad0 args)
+            $(makeExecuteFunction dataName executeE monad0 args)
         in
           Command $(varE gen) execute $(varE callbacks)
       |]
@@ -227,53 +231,24 @@ commandFromFunction functionName ctx0 args monad0 resultType = do
 
   pure [sig, fun]
 
-data Availability =
-    G -- | Generated values, always available.
-  | V -- | Variables, results of commands, only available during execution.
-    deriving (Eq, Ord, Show)
+command :: String -> Q Type -> Q Exp -> Q [Dec]
+command name typ execute = do
+  mfunction <- takeFunction typ
+  Function ctx args monad result <-
+    maybe (fail $ show name ++ " was not monadic.") pure mfunction
 
-command :: Name -> [Availability] -> Q [Dec]
-command name aargs = do
-  vtype <- reifyVarType name
-
-  Function ctx gargs monad result <-
-    maybe (fail $ show name ++ " was not monadic.") pure (takeFunction vtype)
-
-  let
-    gargsLength =
-      length gargs
-
-    targsLength =
-      length aargs
-
-  when (gargsLength /= targsLength) $
-    fail $
-      show name ++ " has " ++ show gargsLength ++
-      " arguments, but " ++ show targsLength ++ " availabilities" ++
-      " were provided."
-
-  vargs <- traverse (modelVar . pure) gargs
+  liftIO . putStrLn $ showPretty mfunction
 
   eqT <- [t| Eq |]
   ordT <- [t| Ord |]
   showT <- [t| Show |]
 
   let
-    deal t g v =
-      case t of
-        G ->
-          g
-        V ->
-          v
-
-    args =
-      zipWith3 deal aargs gargs vargs
-
     dataName =
-      upcaseName name
+      mkName (mapHead Char.toUpper name)
 
     con =
-      NormalC dataName (fmap lazy args)
+      NormalC dataName (fmap (lazy . argumentType) args)
 
     dat_v =
       [KindedTV (mkName "v") (ArrowT `AppT` StarT `AppT` StarT)]
@@ -284,10 +259,10 @@ command name aargs = do
       ]]
 
     qhtraversable =
-      instanceHTraversable dataName aargs
+      instanceHTraversable dataName (fmap argumentAvailability args)
 
     qcommandFrom =
-      commandFromFunction name ctx args (pure monad) (pure result)
+      commandFromExpression dataName execute ctx args (pure monad) (pure result)
 
   htraversable <- qhtraversable
   commandFrom <- qcommandFrom

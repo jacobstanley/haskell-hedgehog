@@ -4,6 +4,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE RankNTypes #-}
 module Test.Example.Registry where
 
 import           Control.Monad (when)
@@ -45,20 +46,20 @@ procTable =
   unsafePerformIO $ HashTable.new
 {-# NOINLINE procTable #-}
 
-reset :: IO ()
-reset = do
+ioReset :: IO ()
+ioReset = do
   IORef.writeIORef pidRef 0
   ks <- fmap fst <$> HashTable.toList procTable
   traverse_ (HashTable.delete procTable) ks
 
-spawn :: IO Pid
-spawn = do
+ioSpawn :: IO Pid
+ioSpawn = do
   pid <- IORef.readIORef pidRef
   IORef.writeIORef pidRef (pid + 1)
   pure pid
 
-register :: Name -> Pid -> IO ()
-register (Name name) (Pid pid) = do
+ioRegister :: Name -> Pid -> IO ()
+ioRegister (Name name) (Pid pid) = do
   m <- HashTable.lookup procTable name
 
   when (isJust m) $
@@ -66,8 +67,8 @@ register (Name name) (Pid pid) = do
 
   HashTable.insert procTable name pid
 
-unregister :: Name -> IO ()
-unregister (Name name) = do
+ioUnregister :: Name -> IO ()
+ioUnregister (Name name) = do
   m <- HashTable.lookup procTable name
 
   when (isNothing m) $
@@ -114,10 +115,10 @@ initialState =
 -- spawn_next(S,Pid,[]) ->
 --   S#state{pids=S#state.pids++[Pid]}.
 --
-$(command 'spawn [])
+$(command "spawn" [t| IO Pid |] [| ioSpawn |])
 
-spawnCommand :: MonadIO m => Command Gen m State
-spawnCommand =
+spawn :: MonadIO m => Command Gen m State
+spawn =
   let
     gen _ =
       Just $
@@ -156,10 +157,10 @@ genName :: MonadGen m => m Name
 genName =
   Name <$> Gen.element ["a", "b", "c", "d"]
 
-$(command 'register [G,V])
+$(command "register" [t| forall v. Name -> Var Pid v -> IO () |] [| ioRegister |])
 
-registerCommand :: MonadIO m => Command Gen m State
-registerCommand =
+register :: MonadIO m => Command Gen m State
+register =
   let
     gen s =
       case Set.toList (statePids s) of
@@ -201,10 +202,10 @@ registerCommand =
 --   S#state{regs=lists:keydelete(Name,1,S#state.regs)}.
 --
 
-$(command 'unregister [G])
+$(command "unregister" [t| Name -> IO () |] [| ioUnregister |])
 
-unregisterCommand :: MonadIO m => Command Gen m State
-unregisterCommand =
+unregister :: MonadIO m => Command Gen m State
+unregister =
   let
     gen _ =
       Just $
@@ -230,9 +231,9 @@ prop_registry_sequential =
       Gen.sequential
         (Range.linear 1 100)
         initialState
-        [spawnCommand, registerCommand, unregisterCommand]
+        [spawn, register, unregister]
 
-    evalIO reset
+    evalIO ioReset
     executeSequential initialState actions
 
 prop_registry_parallel :: Property
@@ -243,10 +244,10 @@ prop_registry_parallel =
         (Range.linear 1 100)
         (Range.linear 1 10)
         initialState
-        [spawnCommand, registerCommand, unregisterCommand]
+        [spawn, register, unregister]
 
     test $ do
-      evalIO reset
+      evalIO ioReset
       executeParallel initialState actions
 
 ------------------------------------------------------------------------
