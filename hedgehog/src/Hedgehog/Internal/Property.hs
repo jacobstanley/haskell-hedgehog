@@ -102,7 +102,7 @@ import qualified Control.Monad.Trans.RWS.Lazy as Lazy
 import qualified Control.Monad.Trans.RWS.Strict as Strict
 import           Control.Monad.Trans.Reader (ReaderT)
 import           Control.Monad.Trans.Resource (MonadResource(..))
-import           Control.Monad.Trans.Resource (ResourceT)
+import           Control.Monad.Trans.Resource (ResourceT, runResourceT)
 import qualified Control.Monad.Trans.State.Lazy as Lazy
 import qualified Control.Monad.Trans.State.Strict as Strict
 import qualified Control.Monad.Trans.Writer.Lazy as Lazy
@@ -793,10 +793,10 @@ withRetries n =
 
 -- | Creates a property with the default configuration.
 --
-property :: HasCallStack => PropertyT IO () -> Property
+property :: HasCallStack => PropertyT (ResourceT IO) () -> Property
 property m =
   Property defaultConfig $
-    withFrozenCallStack (evalM m)
+    withFrozenCallStack (evalM (hoist runResourceT m))
 
 ------------------------------------------------------------------------
 -- FIXME Replace with DeriveLift when we drop 7.10 support.
