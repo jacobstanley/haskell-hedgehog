@@ -1,13 +1,20 @@
 {-# OPTIONS_HADDOCK not-home #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 module Hedgehog.Internal.Distributive (
     MonadTransDistributive(..)
   , MonadTransJuggle(..)
+  , MonadTransHoist(..)
+  , hoistT
   ) where
 
 import           Control.Monad (join)
@@ -282,3 +289,181 @@ instance Monoid w => MonadTransJuggle (Strict.RWST r w s) where
 
   juggleState _ _ _ ((x, s0), s1, w) =
     ((x, s1, w), s0)
+
+------------------------------------------------------------------------
+
+class (
+    Monad m
+  , Monad (Base m)
+  , Monad (t (Base m))
+  , MonadTrans t
+  , MonadTransDistributive t
+  , MFunctor t
+  )
+  => MonadTransHoist t (m :: * -> *)
+  where
+    type Base m :: * -> *
+
+    toT :: m a -> t (Base m) a
+    default
+      toT :: t (Base m) ~ m => m a -> t (Base m) a
+    toT =
+      id
+
+    fromT :: t (Base m) a -> m a
+    default
+      fromT :: t (Base m) ~ m => t (Base m) a -> m a
+    fromT =
+      id
+
+hoistT :: (MonadTransHoist f m, MonadTransHoist g n) => (f (Base m) a -> g (Base n) b) -> m a -> n b
+hoistT f =
+  fromT . f . toT
+
+instance (
+    Monad (t (IdentityT (Base m)))
+  , MonadTransHoist t m
+  , Transformer IdentityT t (Base m)
+  )
+  => MonadTransHoist t (IdentityT m)
+  where
+    type Base (IdentityT m) =
+      IdentityT (Base m)
+    toT =
+      distributeT . hoist toT
+    fromT =
+      hoist fromT . distributeT
+
+instance (
+    Monad (t (MaybeT (Base m)))
+  , MonadTransHoist t m
+  , Transformer MaybeT t (Base m)
+  )
+  => MonadTransHoist t (MaybeT m)
+  where
+    type Base (MaybeT m) =
+      MaybeT (Base m)
+    toT =
+      distributeT . hoist toT
+    fromT =
+      hoist fromT . distributeT
+
+instance (
+    Monad (t (ExceptT x (Base m)))
+  , MonadTransHoist t m
+  , Transformer (ExceptT x) t (Base m)
+  )
+  => MonadTransHoist t (ExceptT x m)
+  where
+    type Base (ExceptT x m) =
+      ExceptT x (Base m)
+    toT =
+      distributeT . hoist toT
+    fromT =
+      hoist fromT . distributeT
+
+instance (
+    Monad (t (ReaderT r (Base m)))
+  , MonadTransHoist t m
+  , Transformer (ReaderT r) t (Base m)
+  )
+  => MonadTransHoist t (ReaderT r m)
+  where
+    type Base (ReaderT r m) =
+      ReaderT r (Base m)
+    toT =
+      distributeT . hoist toT
+    fromT =
+      hoist fromT . distributeT
+
+instance (
+    Monoid w
+  , Monad (t (Lazy.WriterT w (Base m)))
+  , MonadTransHoist t m
+  , Transformer (Lazy.WriterT w) t (Base m)
+  )
+  => MonadTransHoist t (Lazy.WriterT w m)
+  where
+    type Base (Lazy.WriterT w m) =
+      Lazy.WriterT w (Base m)
+    toT =
+      distributeT . hoist toT
+    fromT =
+      hoist fromT . distributeT
+
+instance (
+    Monoid w
+  , Monad (t (Strict.WriterT w (Base m)))
+  , MonadTransHoist t m
+  , Transformer (Strict.WriterT w) t (Base m)
+  )
+  => MonadTransHoist t (Strict.WriterT w m)
+  where
+    type Base (Strict.WriterT w m) =
+      Strict.WriterT w (Base m)
+    toT =
+      distributeT . hoist toT
+    fromT =
+      hoist fromT . distributeT
+
+instance (
+    Monad (t (Lazy.StateT s (Base m)))
+  , MonadTransJuggle t
+  , MonadTransHoist t m
+  , Transformer (Lazy.StateT s) t (Base m)
+  )
+  => MonadTransHoist t (Lazy.StateT s m)
+  where
+    type Base (Lazy.StateT s m) =
+      Lazy.StateT s (Base m)
+    toT =
+      distributeT . hoist toT
+    fromT =
+      hoist fromT . distributeT
+
+instance (
+    Monad (t (Strict.StateT s (Base m)))
+  , MonadTransJuggle t
+  , MonadTransHoist t m
+  , Transformer (Strict.StateT s) t (Base m)
+  )
+  => MonadTransHoist t (Strict.StateT s m)
+  where
+    type Base (Strict.StateT s m) =
+      Strict.StateT s (Base m)
+    toT =
+      distributeT . hoist toT
+    fromT =
+      hoist fromT . distributeT
+
+instance (
+    Monoid w
+  , Monad (t (Lazy.RWST r w s (Base m)))
+  , MonadTransJuggle t
+  , MonadTransHoist t m
+  , Transformer (Lazy.RWST r w s) t (Base m)
+  )
+  => MonadTransHoist t (Lazy.RWST r w s m)
+  where
+    type Base (Lazy.RWST r w s m) =
+      Lazy.RWST r w s (Base m)
+    toT =
+      distributeT . hoist toT
+    fromT =
+      hoist fromT . distributeT
+
+instance (
+    Monoid w
+  , Monad (t (Strict.RWST r w s (Base m)))
+  , MonadTransJuggle t
+  , MonadTransHoist t m
+  , Transformer (Strict.RWST r w s) t (Base m)
+  )
+  => MonadTransHoist t (Strict.RWST r w s m)
+  where
+    type Base (Strict.RWST r w s m) =
+      Strict.RWST r w s (Base m)
+    toT =
+      distributeT . hoist toT
+    fromT =
+      hoist fromT . distributeT

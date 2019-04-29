@@ -71,7 +71,7 @@ import qualified Data.Map as Map
 import qualified Data.Maybe as Maybe
 import           Data.Typeable (Typeable, TypeRep, Proxy(..), typeRep)
 
-import           Hedgehog.Internal.Gen (MonadGen, GenT, GenBase)
+import           Hedgehog.Internal.Gen (MonadGen, GenT, Base)
 import qualified Hedgehog.Internal.Gen as Gen
 import           Hedgehog.Internal.HTraversable (HTraversable(..))
 import           Hedgehog.Internal.Opaque (Opaque(..))
@@ -535,7 +535,7 @@ dropInvalid =
 action ::
      (MonadGen gen, MonadTest m)
   => [Command gen m state]
-  -> GenT (StateT (Context state) (GenBase gen)) (Action m state)
+  -> GenT (StateT (Context state) (Base gen)) (Action m state)
 action commands =
   Gen.justT $ do
     Context state0 _ <- get
