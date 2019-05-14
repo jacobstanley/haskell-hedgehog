@@ -107,6 +107,9 @@ module Hedgehog.Internal.Gen (
   , set
   , map
 
+  -- ** Stateful
+  , cycle
+
   -- ** Subterms
   , freeze
   , subterm
@@ -166,7 +169,7 @@ import           Control.Monad (MonadPlus(..), filterM, replicateM, join)
 import           Control.Monad.Base (MonadBase(..))
 import           Control.Monad.Catch (MonadThrow(..), MonadCatch(..))
 import           Control.Monad.Error.Class (MonadError(..))
-import           Control.Monad.Fail (MonadFail (..))
+import           Control.Monad.Fail (MonadFail(..))
 import qualified Control.Monad.Fail as Fail
 import           Control.Monad.IO.Class (MonadIO(..))
 import           Control.Monad.Morph (MFunctor(..), MMonad(..))
@@ -180,6 +183,10 @@ import           Control.Monad.Trans.Identity (IdentityT(..))
 import           Control.Monad.Trans.Maybe (MaybeT(..))
 import           Control.Monad.Trans.Reader (ReaderT(..))
 import           Control.Monad.Trans.Resource (MonadResource(..))
+import qualified Control.Monad.Trans.RWS.Lazy as Lazy
+import qualified Control.Monad.Trans.RWS.Strict as Strict
+import qualified Control.Monad.Trans.State.Lazy as Lazy
+import qualified Control.Monad.Trans.State.Strict as Strict
 import qualified Control.Monad.Trans.Writer.Lazy as Lazy
 import qualified Control.Monad.Trans.Writer.Strict as Strict
 import           Control.Monad.Writer.Class (MonadWriter(..))
@@ -192,6 +199,7 @@ import qualified Data.Char as Char
 import           Data.Foldable (for_, toList)
 import           Data.Functor.Identity (Identity(..))
 import           Data.Int (Int8, Int16, Int32, Int64)
+import qualified Data.List as List
 import           Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Map (Map)
@@ -216,7 +224,7 @@ import qualified Hedgehog.Internal.Tree as Tree
 import           Hedgehog.Range (Size, Range)
 import qualified Hedgehog.Range as Range
 
-import           Prelude hiding (filter, print, maybe, map, seq)
+import           Prelude hiding (filter, print, maybe, map, seq, cycle)
 
 
 ------------------------------------------------------------------------
@@ -246,8 +254,7 @@ runGenT size seed (GenT m) =
 --
 evalGen :: Size -> Seed -> Gen a -> Maybe (Tree a)
 evalGen size seed =
-  fmap (fmap Maybe.fromJust) .
-  Tree.filter Maybe.isJust .
+  Tree.catMaybes .
   evalGenT size seed
 
 -- | Runs a generator, producing its shrink tree.
@@ -421,6 +428,46 @@ instance (MonadGen m, Monoid w) => MonadGen (Lazy.WriterT w m) where
 instance (MonadGen m, Monoid w) => MonadGen (Strict.WriterT w m) where
   type GenBase (Strict.WriterT w m) =
     Strict.WriterT w (GenBase m)
+
+  toGenT =
+    distributeT . hoist toGenT
+
+  fromGenT =
+    hoist fromGenT . distributeT
+
+instance MonadGen m => MonadGen (Lazy.StateT s m) where
+  type GenBase (Lazy.StateT s m) =
+    Lazy.StateT s (GenBase m)
+
+  toGenT =
+    distributeT . hoist toGenT
+
+  fromGenT =
+    hoist fromGenT . distributeT
+
+instance MonadGen m => MonadGen (Strict.StateT s m) where
+  type GenBase (Strict.StateT s m) =
+    Strict.StateT s (GenBase m)
+
+  toGenT =
+    distributeT . hoist toGenT
+
+  fromGenT =
+    hoist fromGenT . distributeT
+
+instance (MonadGen m, Monoid w) => MonadGen (Lazy.RWST r w s m) where
+  type GenBase (Lazy.RWST r w s m) =
+    Lazy.RWST r w s (GenBase m)
+
+  toGenT =
+    distributeT . hoist toGenT
+
+  fromGenT =
+    hoist fromGenT . distributeT
+
+instance (MonadGen m, Monoid w) => MonadGen (Strict.RWST r w s m) where
+  type GenBase (Strict.RWST r w s m) =
+    Strict.RWST r w s (GenBase m)
 
   toGenT =
     distributeT . hoist toGenT
@@ -1379,6 +1426,31 @@ atLeast n =
     const True
   else
     not . null . drop (n - 1)
+
+------------------------------------------------------------------------
+-- Combinators - Stateful
+
+data Cons a =
+  Cons a (Cons a)
+
+-- | Cycle through a list of generators in order.
+--
+--   Takes a list of generators and a function which receives the cycling
+--   generator as an argument.
+--
+cycle :: MonadGen m => [m a] -> (forall n. MonadGen n => n a -> n b) -> m b
+cycle gs0 f =
+  let
+    toCons = \case
+      [] ->
+        error "Hedgehog.Gen.cycle: used with empty list"
+      x : xs ->
+        Cons x (toCons xs)
+  in
+    flip Strict.evalStateT (toCons (List.cycle gs0)) . f $ do
+      Cons g gs <- get
+      put gs
+      lift g
 
 ------------------------------------------------------------------------
 -- Combinators - Subterms

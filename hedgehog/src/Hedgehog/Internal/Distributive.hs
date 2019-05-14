@@ -7,13 +7,23 @@
 {-# LANGUAGE TypeFamilies #-}
 module Hedgehog.Internal.Distributive (
     MonadTransDistributive(..)
-  , MonadTransJuggle(..)
+
+  , fromStrictStateT
+  , toStrictStateT
+
+  , fromLazyStateT
+  , toLazyStateT
+
+  , fromStrictRWST
+  , toStrictRWST
+
+  , fromLazyRWST
+  , toLazyRWST
   ) where
 
 import           Control.Monad (join)
 import           Control.Monad.Morph (MFunctor(..))
 import           Control.Monad.Trans.Class (MonadTrans(..))
-import           Control.Monad.Trans.Control (MonadTransControl(..))
 import           Control.Monad.Trans.Identity (IdentityT(..))
 import           Control.Monad.Trans.Except (ExceptT(..), runExceptT)
 import           Control.Monad.Trans.Maybe (MaybeT(..))
@@ -25,8 +35,9 @@ import qualified Control.Monad.Trans.State.Strict as Strict
 import qualified Control.Monad.Trans.Writer.Lazy as Lazy
 import qualified Control.Monad.Trans.Writer.Strict as Strict
 
-import           Data.Proxy (Proxy(..))
 import           Data.Bifunctor (Bifunctor(..))
+import           Data.Maybe (fromMaybe)
+import           Data.Monoid (Last(..))
 
 import           GHC.Exts (Constraint)
 
@@ -83,202 +94,138 @@ instance MonadTransDistributive (Lazy.StateT s) where
   type Transformer f (Lazy.StateT s) m = (
       Monad m
     , Monad (f m)
-    , Monad (Lazy.StateT s m)
-    , Monad (f (Lazy.StateT s m))
+    , Monad (f (Lazy.WriterT (Last s) m))
+    , Monad (f (ReaderT s (Lazy.WriterT (Last s) m)))
     , MonadTrans f
-    , MonadTransControl f
-    , MonadTransJuggle f
     , MFunctor f
     )
-
-  distributeT :: forall f m a.
-       Transformer f (Lazy.StateT s) m
-    => Lazy.StateT s (f m) a
-    -> f (Lazy.StateT s m) a
-  distributeT m =
-    join $ liftWith $ \run ->
-      let
-        restoreStateT :: s -> StT f (a, s) -> (f (Lazy.StateT s m) a, s)
-        restoreStateT s = do
-          first (restoreT . pure) . juggleState @f @a Proxy Proxy s
-      in
-        Lazy.StateT $ \s -> do
-          fmap (restoreStateT s) . run $ Lazy.runStateT m s
+  distributeT =
+    hoist toLazyStateT .
+    distributeT .
+    hoist distributeT .
+    fromLazyStateT
 
 instance MonadTransDistributive (Strict.StateT s) where
   type Transformer f (Strict.StateT s) m = (
       Monad m
     , Monad (f m)
-    , Monad (Strict.StateT s m)
-    , Monad (f (Strict.StateT s m))
+    , Monad (f (Strict.WriterT (Last s) m))
+    , Monad (f (ReaderT s (Strict.WriterT (Last s) m)))
     , MonadTrans f
-    , MonadTransControl f
-    , MonadTransJuggle f
     , MFunctor f
     )
-
-  distributeT :: forall f m a.
-       Transformer f (Strict.StateT s) m
-    => Strict.StateT s (f m) a
-    -> f (Strict.StateT s m) a
-  distributeT m =
-    join $ liftWith $ \run ->
-      let
-        restoreStateT :: s -> StT f (a, s) -> (f (Strict.StateT s m) a, s)
-        restoreStateT s = do
-          first (restoreT . pure) . juggleState @f @a Proxy Proxy s
-      in
-        Strict.StateT $ \s -> do
-          fmap (restoreStateT s) . run $ Strict.runStateT m s
+  distributeT =
+    hoist toStrictStateT .
+    distributeT .
+    hoist distributeT .
+    fromStrictStateT
 
 instance Monoid w => MonadTransDistributive (Lazy.RWST r w s) where
   type Transformer f (Lazy.RWST r w s) m = (
       Monad m
     , Monad (f m)
-    , Monad (Lazy.RWST r w s m)
-    , Monad (f (Lazy.RWST r w s m))
+    , Monad (f (Lazy.WriterT (Last s, w) m))
+    , Monad (f (ReaderT (r, s) (Lazy.WriterT (Last s, w) m)))
     , MonadTrans f
-    , MonadTransControl f
-    , MonadTransJuggle f
     , MFunctor f
     )
-
-  distributeT :: forall f m a.
-       Transformer f (Lazy.RWST r w s) m
-    => Lazy.RWST r w s (f m) a
-    -> f (Lazy.RWST r w s m) a
-  distributeT m =
-    join $ liftWith $ \run ->
-      let
-        restoreRWST :: s -> StT f (a, s, w) -> (f (Lazy.RWST r w s m) a, s, w)
-        restoreRWST s = do
-          first3 (restoreT . pure) . juggleRWS @f @w @a Proxy Proxy Proxy s
-      in
-        Lazy.RWST $ \r s -> do
-          fmap (restoreRWST s) . run $ Lazy.runRWST m r s
+  distributeT =
+    hoist toLazyRWST .
+    distributeT .
+    hoist distributeT .
+    fromLazyRWST
 
 instance Monoid w => MonadTransDistributive (Strict.RWST r w s) where
   type Transformer f (Strict.RWST r w s) m = (
       Monad m
     , Monad (f m)
-    , Monad (Strict.RWST r w s m)
-    , Monad (f (Strict.RWST r w s m))
+    , Monad (f (Strict.WriterT (Last s, w) m))
+    , Monad (f (ReaderT (r, s) (Strict.WriterT (Last s, w) m)))
     , MonadTrans f
-    , MonadTransControl f
-    , MonadTransJuggle f
     , MFunctor f
     )
-
-  distributeT :: forall f m a.
-       Transformer f (Strict.RWST r w s) m
-    => Strict.RWST r w s (f m) a
-    -> f (Strict.RWST r w s m) a
-  distributeT m =
-    join $ liftWith $ \run ->
-      let
-        restoreRWST :: s -> StT f (a, s, w) -> (f (Strict.RWST r w s m) a, s, w)
-        restoreRWST s = do
-          first3 (restoreT . pure) . juggleRWS @f @w @a Proxy Proxy Proxy s
-      in
-        Strict.RWST $ \r s -> do
-          fmap (restoreRWST s) . run $ Strict.runRWST m r s
+  distributeT =
+    hoist toStrictRWST .
+    distributeT .
+    hoist distributeT .
+    fromStrictRWST
 
 ------------------------------------------------------------------------
--- * MonadTransJuggle
+-- StateT s <-> ReaderT s (WriterT (Last s))
 
-first3 :: (a -> b) -> (a, s, w) -> (b, s, w)
-first3 f (a, s, w) =
-  (f a, s, w)
-
-unpack3 :: (a, s, w) -> (a, (s, w))
-unpack3 (a, s, w) =
-  (a, (s, w))
-
-juggleRWS :: forall t w a s.
-     (MonadTransJuggle t, Monoid w)
-  => Proxy t
-  -> Proxy w
-  -> Proxy a
-  -> s
-  -> StT t (a, s, w)
-  -> (StT t a, s, w)
-juggleRWS _ _ _ s0 st0 =
+fromLazyStateT :: Functor m => Lazy.StateT s m a -> ReaderT s (Lazy.WriterT (Last s) m) a
+fromLazyStateT =
   let
-    (st, (s, w)) =
-      juggleState @t @a Proxy Proxy (s0, mempty) $
-        mapStT @t @(a, s, w) Proxy Proxy unpack3 st0
+    mkWriter f s = do
+      Lazy.WriterT (second (Last . Just) <$> f s)
   in
-    (st, s, w)
+    ReaderT . mkWriter . Lazy.runStateT
 
-class MonadTransControl t => MonadTransJuggle (t :: (* -> *) -> * -> *) where
-  mapStT :: Proxy t -> Proxy a -> (a -> b) -> StT t a -> StT t b
-  juggleState :: Proxy t -> Proxy a -> s -> StT t (a, s) -> (StT t a, s)
+toLazyStateT :: Functor m => ReaderT s (Lazy.WriterT (Last s) m) a -> Lazy.StateT s m a
+toLazyStateT =
+  let
+    runWriter f s =
+      second (fromMaybe s . getLast) <$> Lazy.runWriterT (f s)
+  in
+    Lazy.StateT . runWriter . runReaderT
 
-instance MonadTransJuggle MaybeT where
-  mapStT _ _ =
-    fmap
+fromStrictStateT :: Functor m => Strict.StateT s m a -> ReaderT s (Strict.WriterT (Last s) m) a
+fromStrictStateT =
+  let
+    mkWriter f s = do
+      Strict.WriterT (second (Last . Just) <$> f s)
+  in
+    ReaderT . mkWriter . Strict.runStateT
 
-  juggleState _ _ s0 = \case
-    Nothing ->
-      (Nothing, s0)
-    Just (x, s) ->
-      (Just x, s)
+toStrictStateT :: Functor m => ReaderT s (Strict.WriterT (Last s) m) a -> Strict.StateT s m a
+toStrictStateT =
+  let
+    runWriter f s =
+      second (fromMaybe s . getLast) <$> Strict.runWriterT (f s)
+  in
+    Strict.StateT . runWriter . runReaderT
 
-instance MonadTransJuggle (ExceptT x) where
-  mapStT _ _ =
-    fmap
+------------------------------------------------------------------------
+-- RWST r w s <-> ReaderT s (WriterT (Last s))
 
-  juggleState _ _ s0 = \case
-    Left x ->
-      (Left x, s0)
-    Right (x, s) ->
-      (Right x, s)
+pack :: (r, s, w) -> (r, (Last s, w))
+pack (r, s, w) =
+  (r, (Last (Just s), w))
 
-instance MonadTransJuggle (ReaderT r) where
-  mapStT _ _ =
-    id
+unpack :: s -> (r, (Last s, w)) -> (r, s, w)
+unpack s0 (r, (s, w)) =
+  (r, fromMaybe s0 (getLast s), w)
 
-  juggleState _ _ _ (x, s) =
-    (x, s)
+fromLazyRWST :: Functor m => Lazy.RWST r w s m a -> ReaderT (r, s) (Lazy.WriterT (Last s, w) m) a
+fromLazyRWST =
+  let
+    mkWriter f s =
+      Lazy.WriterT (pack <$> uncurry f s)
+  in
+    ReaderT . mkWriter . Lazy.runRWST
 
-instance Monoid w => MonadTransJuggle (Lazy.WriterT w) where
-  mapStT _ _ =
-    first
+toLazyRWST :: Functor m => ReaderT (r, s) (Lazy.WriterT (Last s, w) m) a -> Lazy.RWST r w s m a
+toLazyRWST =
+  let
+    runWriter :: Functor m => ((r, s) -> Lazy.WriterT (Last s, w) m a) -> r -> s -> m (a, s, w)
+    runWriter f r s =
+      unpack s <$> Lazy.runWriterT (f (r, s))
+  in
+    Lazy.RWST . runWriter . runReaderT
 
-  juggleState _ _ _ ((x, s), w) =
-    ((x, w), s)
+fromStrictRWST :: Functor m => Strict.RWST r w s m a -> ReaderT (r, s) (Strict.WriterT (Last s, w) m) a
+fromStrictRWST =
+  let
+    mkWriter f s =
+      Strict.WriterT (pack <$> uncurry f s)
+  in
+    ReaderT . mkWriter . Strict.runRWST
 
-instance Monoid w => MonadTransJuggle (Strict.WriterT w) where
-  mapStT _ _ =
-    first
-
-  juggleState _ _ _ ((x, s), w) =
-    ((x, w), s)
-
-instance MonadTransJuggle (Lazy.StateT s) where
-  mapStT _ _ =
-    first
-
-  juggleState _ _ _ ((x, s0), s1) =
-    ((x, s1), s0)
-
-instance MonadTransJuggle (Strict.StateT s) where
-  mapStT _ _ =
-    first
-
-  juggleState _ _ _ ((x, s0), s1) =
-    ((x, s1), s0)
-
-instance Monoid w => MonadTransJuggle (Lazy.RWST r w s) where
-  mapStT _ _ =
-    first3
-
-  juggleState _ _ _ ((x, s0), s1, w) =
-    ((x, s1, w), s0)
-
-instance Monoid w => MonadTransJuggle (Strict.RWST r w s) where
-  mapStT _ _ =
-    first3
-
-  juggleState _ _ _ ((x, s0), s1, w) =
-    ((x, s1, w), s0)
+toStrictRWST :: Functor m => ReaderT (r, s) (Strict.WriterT (Last s, w) m) a -> Strict.RWST r w s m a
+toStrictRWST =
+  let
+    runWriter :: Functor m => ((r, s) -> Strict.WriterT (Last s, w) m a) -> r -> s -> m (a, s, w)
+    runWriter f r s =
+      unpack s <$> Strict.runWriterT (f (r, s))
+  in
+    Strict.RWST . runWriter . runReaderT

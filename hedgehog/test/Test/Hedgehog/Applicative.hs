@@ -64,7 +64,7 @@ xprop_StateT_inside =
 
 prop_StateT_outside :: Property
 prop_StateT_outside =
-  propVars . (`Lazy.evalStateT` 0) $ distributeT genCommands
+  propVars $ (`Lazy.evalStateT` 0) genCommands
 
 propVars :: Gen [Var :<- Command] -> Property
 propVars gen =

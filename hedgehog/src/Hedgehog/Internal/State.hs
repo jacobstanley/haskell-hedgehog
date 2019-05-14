@@ -56,7 +56,6 @@ import qualified Control.Concurrent.Async.Lifted as Async
 import           Control.Monad (foldM, foldM_)
 import           Control.Monad.Catch (MonadCatch)
 import           Control.Monad.State.Class (MonadState, get, put, modify)
-import           Control.Monad.Morph (MFunctor(..))
 import           Control.Monad.Trans.Class (lift)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Control.Monad.Trans.State (State, runState, execState)
@@ -71,8 +70,7 @@ import qualified Data.Map as Map
 import qualified Data.Maybe as Maybe
 import           Data.Typeable (Typeable, TypeRep, Proxy(..), typeRep)
 
-import           Hedgehog.Internal.Distributive (distributeT)
-import           Hedgehog.Internal.Gen (MonadGen, GenT, GenBase)
+import           Hedgehog.Internal.Gen (MonadGen)
 import qualified Hedgehog.Internal.Gen as Gen
 import           Hedgehog.Internal.HTraversable (HTraversable(..))
 import           Hedgehog.Internal.Opaque (Opaque(..))
@@ -536,7 +534,7 @@ dropInvalid =
 action ::
      (MonadGen gen, MonadTest m)
   => [Command gen m state]
-  -> GenT (StateT (Context state) (GenBase gen)) (Action m state)
+  -> StateT (Context state) gen (Action m state)
 action commands =
   Gen.justT $ do
     Context state0 _ <- get
@@ -549,7 +547,7 @@ action commands =
         Nothing ->
           error "genCommand: internal error, tried to use generator with invalid state."
         Just gen ->
-          hoist lift $ Gen.toGenT gen
+          lift gen
 
     if not $ callbackRequire callbacks state0 input then
       pure Nothing
@@ -573,7 +571,7 @@ genActions ::
   -> Context state
   -> gen ([Action m state], Context state)
 genActions range commands ctx = do
-  xs <- Gen.fromGenT . (`evalStateT` ctx) . distributeT $ Gen.list range (action commands)
+  xs <- Gen.list range (action commands) `evalStateT` ctx
   pure $
     dropInvalid xs `runState` ctx
 

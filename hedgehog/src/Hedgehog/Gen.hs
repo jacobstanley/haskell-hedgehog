@@ -1,3 +1,4 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 module Hedgehog.Gen (
   -- ** Shrinking
     shrink
@@ -77,6 +78,9 @@ module Hedgehog.Gen (
   , set
   , map
 
+  -- ** Stateful
+  , cycle
+
   -- ** Subterms
   , freeze
   , subterm
@@ -104,5 +108,3 @@ module Hedgehog.Gen (
 
 import           Hedgehog.Internal.Gen
 import           Hedgehog.Internal.State (sequential, parallel)
-
-import           Prelude hiding (filter, print, maybe, map, seq)

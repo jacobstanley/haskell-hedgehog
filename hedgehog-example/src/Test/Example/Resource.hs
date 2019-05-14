@@ -146,7 +146,7 @@ tests = do
 
   result <-
     checkSequential $ Group "Test.Example.Resource" [
-        ("prop_unix_sort", prop_logged_unix_sort ref)
+        ("prop_unix_sort", prop_unix_sort)
       , ("prop_logged_unix_sort", prop_logged_unix_sort ref)
       ]
 
