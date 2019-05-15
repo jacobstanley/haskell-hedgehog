@@ -14,15 +14,18 @@ import           Control.Monad.State.Class (MonadState(..), modify)
 import qualified Control.Monad.State.Strict as Strict
 import qualified Control.Monad.Writer.Strict as Strict
 
+import           Data.Bifunctor (second)
 import           Data.Functor.Identity (Identity(..))
 import           Data.Map (Map)
 import qualified Data.Map.Strict as Map
-import           Data.Monoid (Last)
+import qualified Data.Maybe as Maybe
+import           Data.Monoid (Last(..))
 
 import           Hedgehog hiding (Var)
 import qualified Hedgehog.Range as Range
 import qualified Hedgehog.Gen as Gen
 
+import           Hedgehog.Internal.Distributive (distributeT)
 import           Hedgehog.Internal.Distributive (fromStrictStateT, toStrictStateT)
 
 
@@ -87,12 +90,19 @@ genProgram =
   flip Strict.evalStateT 0 $
     Gen.list (Range.constant 0 50) genStatement
 
-newtype RW =
+newtype RW a =
   RW {
-      unRW :: ReaderT Int (Strict.WriterT (Last Int) Identity) ()
+      unRW :: ReaderT Int (Strict.WriterT (Last Int) Identity) a
     }
 
-instance Show RW where
+runRW :: RW a -> Int -> (a, Int)
+runRW rw s =
+  second (Maybe.fromMaybe s . getLast) .
+  runIdentity .
+  Strict.runWriterT $
+  runReaderT (unRW rw) s
+
+instance Show a => Show (RW a) where
   show =
     show . Strict.runWriterT . flip runReaderT 0 . unRW
 
@@ -143,7 +153,7 @@ prop_state =
 
     (`Strict.runState` 0) (evalProgram x)
       ===
-      (`Strict.runState` 0) (roundtrip (evalProgram x))
+      (`runRW` 0) (RW (fromStrictStateT (evalProgram x)))
 
 tests :: IO Bool
 tests =
